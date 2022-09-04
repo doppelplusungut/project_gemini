@@ -3,7 +3,7 @@ from torch import nn
 
 class Classifier(nn.Module):
 
-    def __init__(self, n_out=61):
+    def __init__(self, MODEL_CONF):
         super().__init__()
 
         self.model = nn.Sequential(
@@ -21,7 +21,7 @@ class Classifier(nn.Module):
             nn.ReLU(),
             nn.Linear(64, 128),
             nn.ReLU(),
-            nn.Linear(128, n_out)
+            nn.Linear(128, MODEL_CONF.N_OUT)
         )
 
         self.model.apply(self.init_weights)

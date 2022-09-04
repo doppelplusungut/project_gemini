@@ -1,15 +1,23 @@
+from os import device_encoding
+import json
+
 import torch
 import torchvision
+from tensorboardX import SummaryWriter
+from datetime import datetime
+from easydict import EasyDict
 from model.cnn import Classifier
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, random_split
 
+from conf.config import CONF
 
-def train_cnn(n_epochs=10, batch_size=16):
+
+def train_cnn():
     # set seeds for reproducability
-    seed_val = 42
-    torch.manual_seed(seed_val)
-    torch.cuda.manual_seed_all(seed_val)
+    torch.manual_seed(CONF.TRAIN.MANUAL_SEED)
+    torch.cuda.manual_seed_all(CONF.TRAIN.MANUAL_SEED)
 
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
     transforms = torchvision.transforms.Compose([
         torchvision.transforms.RandomRotation(degrees=(90, 90)),
@@ -27,33 +35,42 @@ def train_cnn(n_epochs=10, batch_size=16):
     train_dataloader = DataLoader(
         train_dataset,
         sampler=RandomSampler(train_dataset),
-        batch_size=batch_size,
-        num_workers=4
+        batch_size=CONF.TRAIN.BATCH_SIZE,
+        num_workers=CONF.TRAIN.NUM_WORKERS
     )
 
     validation_dataloader = DataLoader(
         val_dataset,
         sampler=SequentialSampler(val_dataset),
-        batch_size=batch_size,
-        num_workers=4
+        batch_size=CONF.VAL.BATCH_SIZE,
+        num_workers=CONF.VAL.NUM_WORKERS
     )
 
     # load model
-    model = Classifier(n_out=62)
-    if torch.cuda.is_available():
-        model.cuda()
+    model = Classifier(MODEL_CONF = CONF.MODEL)
+
+    #CUDA stuff
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
+    #logging
+    writer = SummaryWriter("logs/{}".format(timestamp))
+    with open("logs/{}/config.json".format(timestamp), 'w') as fp:
+        json.dump(CONF, fp)
 
     # load loss, optimizer and other training variables
     loss_func = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
 
     # run training loop for n_epochs epochs
-    for epoch in range(n_epochs):
+    for epoch in range(CONF.TRAIN.EPOCHS):
         total_train_loss = 0.0
         running_train_loss = 0.0
         model.train()
         print(f"Running training...")
         for i, (images, labels) in enumerate(train_dataloader, 0):
+            images = images.to(device)
+            labels = labels.to(device)
             model.zero_grad()
             output = model(images)
             loss = loss_func(output, labels)
@@ -64,16 +81,12 @@ def train_cnn(n_epochs=10, batch_size=16):
             running_train_loss += loss.item()
 
             if i % 2000 == 0:    # print every 2000 mini-batches
-                print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_train_loss / i:.3f}')
+                writer.add_scalar("training loss", running_train_loss/(i+1), i)
                 running_train_loss = 0.0
         
         avg_train_loss = total_train_loss / len(train_dataloader)
+        writer.add_scalar("Avg training loss over epoch", avg_train_loss, epoch)
 
-        print("")
-        print("  Average training loss: {0:.2f}".format(avg_train_loss))
-        print("")
-
-        print("Running Validation...")
         model.eval()
         total_eval_loss = 0.0
         running_eval_loss = 0.0
@@ -81,6 +94,8 @@ def train_cnn(n_epochs=10, batch_size=16):
         correct = 0
 
         for i, (images, labels) in enumerate(validation_dataloader, 0):
+            images = images.to(device)
+            labels = labels.to(device)
             with torch.no_grad():
                 output = model(images)
             loss = loss_func(output, labels)
@@ -92,18 +107,18 @@ def train_cnn(n_epochs=10, batch_size=16):
             correct += (predicted == labels).sum().item()
 
             if i % 2000 == 0:    # print every 2000 mini-batches
-                print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_eval_loss / i:.3f}')
-                print(f'[{epoch + 1}, {i + 1:5d}] total accuracy: {100 * correct / total:.3f}')
+                #print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_eval_loss / i:.3f}')
+                writer.add_scalar("val loss", running_eval_loss/(i+1), i)
+                #print(f'[{epoch + 1}, {i + 1:5d}] total accuracy: {100 * correct / total:.3f}')
+                writer.add_scalar("val accuracy", 100*correct/total, i)
                 running_eval_loss = 0.0
 
         avg_eval_loss = total_eval_loss / len(validation_dataloader)
 
-        print("")
-        print("  Average validation loss: {0:.2f}".format(avg_eval_loss))
-        print("  Average validation accuracy: {0:.2f}".format(100 * correct // total))
-        print("")
+        writer.add_scalar("Average validation loss", avg_eval_loss, epoch)
+        writer.add_scalar("Average validation accuracy", 100 * correct / total, epoch)
 
-    torch.save(model.state_dict(), "data/trained_models/test.pth")
+    torch.save(model.state_dict(), "logs/{}/test.pth".format(timestamp))
 
 
 if __name__ == '__main__':
